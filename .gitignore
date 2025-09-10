@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.ipynb_checkpoints
+.venv/
+
+# VSCode
+.vscode/
+
+
+# Virtualenv
+.venv/
+.env/
+
+# Training artifacts
+*.pt
+*.pth
+runs/
+face_cnn_runs/
+
+# Datasets (絶対にコミットしない)
+dataset/
+data/
+
+# Outputs
+runs/
+checkpoints/
+logs/
