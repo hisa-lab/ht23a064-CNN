@@ -85,6 +85,10 @@ def train(args):
     )
 
     model = build_model(num_classes=2, freeze_until_layer2=True).to(device)
+
+    for n, p in model.named_parameters():
+        print("[TRAIN]" if p.requires_grad else "[FROZEN]", n)
+
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=args.lr)
     
