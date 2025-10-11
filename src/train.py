@@ -107,7 +107,8 @@ def train(args):
 
     for epoch in range(1, args.epochs + 1):
         model.train()
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}", disable=True)
+        print(f"\n=== Epoch {epoch}/{args.epochs} start ===", flush=True)
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
         running_loss = 0.0
         running_acc = 0.0
         n = 0
