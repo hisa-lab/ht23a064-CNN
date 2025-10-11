@@ -87,7 +87,15 @@ def train(args):
     model = build_model(num_classes=2, freeze_until_layer2=True).to(device)
 
     for n, p in model.named_parameters():
-        print("[TRAIN]" if p.requires_grad else "[FROZEN]", n)
+        print(("[TRAIN] " if p.requires_grad else "[FROZEN] ") + n, flush=True)
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    frozen    = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    print(f"trainable params: {trainable:,} / frozen params: {frozen:,}", flush=True)
+
+    # 念のためassert（conv1〜layer2が本当に凍結されているか）
+    assert all(not p.requires_grad for n,p in model.named_parameters()
+    if n.startswith(("conv1","bn1","layer1","layer2"))), "凍結できていません！"
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=args.lr)
@@ -99,7 +107,7 @@ def train(args):
 
     for epoch in range(1, args.epochs + 1):
         model.train()
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}", disable=True)
         running_loss = 0.0
         running_acc = 0.0
         n = 0
