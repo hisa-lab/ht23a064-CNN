@@ -41,12 +41,17 @@ def get_loaders(data_root, img_size, batch_size, num_workers):
     return train_loader, val_loader, test_loader, train_ds.classes
 
 
-def build_model(num_classes=2):
-    # torchvision >= 0.13 推奨API
+def build_model(num_classes=2, freeze_until_layer2=False):
     weights = models.ResNet18_Weights.IMAGENET1K_V1
     model = models.resnet18(weights=weights)
     in_features = model.fc.in_features
     model.fc = nn.Linear(in_features, num_classes)
+
+    if freeze_until_layer2:
+        # conv1, bn1, layer1, layer2 を凍結
+        for name, param in model.named_parameters():
+            if not (name.startswith("layer3") or name.startswith("layer4") or name.startswith("fc")):
+                param.requires_grad = False
     return model
 
 
@@ -79,8 +84,10 @@ def train(args):
         args.data_root, args.img_size, args.batch_size, args.num_workers
     )
 
-    model = build_model(num_classes=2).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    model = build_model(num_classes=2, freeze_until_layer2=True).to(device)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = optim.Adam(trainable_params, lr=args.lr)
+    
     criterion = nn.CrossEntropyLoss()
 
     best_val_acc = 0.0
