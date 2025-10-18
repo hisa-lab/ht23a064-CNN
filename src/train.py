@@ -13,13 +13,18 @@ from tqdm import tqdm
 from utils import set_seed, accuracy, compute_confusion_matrix
 
 
+# =========================
+# データローダー
+# =========================
 def get_loaders(data_root, img_size, batch_size, num_workers):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
     train_tfms = transforms.Compose([
         transforms.Resize((img_size, img_size)),
+        transforms.RandomResizedCrop(img_size, scale=(0.8, 1.0)),
         transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(0.2, 0.2, 0.2, 0.1),
         transforms.ToTensor(),
         normalize,
     ])
@@ -41,20 +46,49 @@ def get_loaders(data_root, img_size, batch_size, num_workers):
     return train_loader, val_loader, test_loader, train_ds.classes
 
 
-def build_model(num_classes=2, freeze_until_layer2=False):
+# =========================
+# モデル構築
+# =========================
+def build_model(num_classes=2, tune_mode="l34"):
+    """
+    tune_mode:
+      - "l34":    layer3, layer4, fc を学習（デフォルト）
+      - "l2_4":   layer2, layer3, layer4, fc を学習
+      - "l1_4":   layer1〜fc（ほぼ全層）
+      - "all":    conv1〜fc まで完全全層
+    """
     weights = models.ResNet18_Weights.IMAGENET1K_V1
     model = models.resnet18(weights=weights)
-    in_features = model.fc.in_features
-    model.fc = nn.Linear(in_features, num_classes)
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
 
-    if freeze_until_layer2:
-        # conv1, bn1, layer1, layer2 を凍結
-        for name, param in model.named_parameters():
-            if not (name.startswith("layer3") or name.startswith("layer4") or name.startswith("fc")):
-                param.requires_grad = False
+    # いったん全凍結
+    for p in model.parameters():
+        p.requires_grad = False
+
+    # 解凍ヘルパー
+    def unfreeze(prefixes):
+        for n, p in model.named_parameters():
+            if any(n.startswith(pref) for pref in prefixes):
+                p.requires_grad = True
+
+    if tune_mode == "l34":
+        unfreeze(["layer3", "layer4", "fc"])
+    elif tune_mode == "l2_4":
+        unfreeze(["layer2", "layer3", "layer4", "fc"])
+    elif tune_mode == "l1_4":
+        unfreeze(["layer1", "layer2", "layer3", "layer4", "fc"])
+    elif tune_mode == "all":
+        for p in model.parameters():
+            p.requires_grad = True
+    else:
+        raise ValueError(f"Unknown tune_mode: {tune_mode}")
+
     return model
 
 
+# =========================
+# 評価関数
+# =========================
 def evaluate(model, loader, device):
     model.eval()
     total_acc = 0.0
@@ -73,6 +107,9 @@ def evaluate(model, loader, device):
     return total_acc / max(n, 1), cm
 
 
+# =========================
+# 学習関数
+# =========================
 def train(args):
     set_seed(42)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -84,8 +121,9 @@ def train(args):
         args.data_root, args.img_size, args.batch_size, args.num_workers
     )
 
-    model = build_model(num_classes=2, freeze_until_layer2=True).to(device)
+    model = build_model(num_classes=2, tune_mode=args.tune_mode).to(device)
 
+    # 確認ログ
     for n, p in model.named_parameters():
         print(("[TRAIN] " if p.requires_grad else "[FROZEN] ") + n, flush=True)
 
@@ -93,15 +131,26 @@ def train(args):
     frozen    = sum(p.numel() for p in model.parameters() if not p.requires_grad)
     print(f"trainable params: {trainable:,} / frozen params: {frozen:,}", flush=True)
 
-    # 念のためassert（conv1〜layer2が本当に凍結されているか）
-    assert all(not p.requires_grad for n,p in model.named_parameters()
-    if n.startswith(("conv1","bn1","layer1","layer2"))), "凍結できていません！"
+    # 層別LR
+    def lr_mult(name):
+        if   name.startswith(("conv1","bn1","layer1")): return 0.1
+        elif name.startswith("layer2"):                 return 0.3
+        elif name.startswith(("layer3","layer4")):      return 1.0
+        elif name.startswith("fc"):                     return 3.0
+        else:                                           return 1.0
 
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = optim.Adam(trainable_params, lr=args.lr)
-    
+    param_groups = {}
+    for n, p in model.named_parameters():
+        if p.requires_grad:
+            m = lr_mult(n)
+            param_groups.setdefault(m, []).append(p)
+
+    optimizer = optim.Adam(
+        [{"params": ps, "lr": args.lr * mult} for mult, ps in param_groups.items()],
+        weight_decay=1e-4
+    )
+
     criterion = nn.CrossEntropyLoss()
-
     best_val_acc = 0.0
     best_ckpt = out_dir / 'best.pt'
 
@@ -152,14 +201,20 @@ def train(args):
     print(f"\n[Test] Acc: {test_acc:.4f}\nConfusion Matrix:\n{test_cm}")
 
 
+# =========================
+# エントリポイント
+# =========================
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data-root', type=str, required=True, help='path to data split root (contains train/val/test)')
+    parser.add_argument('--data-root', type=str, required=True, help='path to data split root (train/val/test)')
     parser.add_argument('--img-size', type=int, default=224)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--num-workers', type=int, default=2)
     parser.add_argument('--output-dir', type=str, default='runs')
+    parser.add_argument('--tune-mode', type=str, default='l34',
+                        choices=['l34', 'l2_4', 'l1_4', 'all'],
+                        help='which layers to fine-tune')
     args = parser.parse_args()
     train(args)
