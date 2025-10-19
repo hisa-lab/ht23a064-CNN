@@ -49,19 +49,22 @@ def get_loaders(data_root, img_size, batch_size, num_workers):
 # =========================
 # モデル構築
 # =========================
-def build_model(num_classes=2, tune_mode="l34"):
+def build_model(num_classes=2, tune_mode="l34", pretrained=True):
     """
     tune_mode:
       - "l34":    layer3, layer4, fc を学習（デフォルト）
       - "l2_4":   layer2, layer3, layer4, fc を学習
       - "l1_4":   layer1〜fc（ほぼ全層）
       - "all":    conv1〜fc まで完全全層
+    pretrained:
+      - True  : ImageNet 事前学習重みで初期化（転移学習）
+      - False : ランダム初期化（転移学習なし）
     """
-    weights = models.ResNet18_Weights.IMAGENET1K_V1
+    weights = models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
     model = models.resnet18(weights=weights)
     model.fc = nn.Linear(model.fc.in_features, num_classes)
 
-    # いったん全凍結
+    # いったん全凍結（後で必要層のみ解凍）
     for p in model.parameters():
         p.requires_grad = False
 
@@ -70,6 +73,11 @@ def build_model(num_classes=2, tune_mode="l34"):
         for n, p in model.named_parameters():
             if any(n.startswith(pref) for pref in prefixes):
                 p.requires_grad = True
+
+    # 転移学習なしで凍結は意味が薄いので、tune_mode を all に寄せる
+    if (not pretrained) and (tune_mode != "all"):
+        print(f"[INFO] pretrained=False なので tune_mode='{tune_mode}' -> 'all' に変更します。", flush=True)
+        tune_mode = "all"
 
     if tune_mode == "l34":
         unfreeze(["layer3", "layer4", "fc"])
@@ -121,9 +129,10 @@ def train(args):
         args.data_root, args.img_size, args.batch_size, args.num_workers
     )
 
-    model = build_model(num_classes=2, tune_mode=args.tune_mode).to(device)
+    model = build_model(num_classes=2, tune_mode=args.tune_mode, pretrained=args.pretrained).to(device)
 
     # 確認ログ
+    print(f"[INFO] pretrained={args.pretrained}  tune_mode={args.tune_mode}", flush=True)
     for n, p in model.named_parameters():
         print(("[TRAIN] " if p.requires_grad else "[FROZEN] ") + n, flush=True)
 
@@ -152,7 +161,12 @@ def train(args):
 
     criterion = nn.CrossEntropyLoss()
     best_val_acc = 0.0
-    best_ckpt = out_dir / 'best.pt'
+
+    # === 保存ファイル名を分ける ===
+    best_name = "best_transfer.pt" if args.pretrained else "best_scratch.pt"
+    best_ckpt = out_dir / best_name
+    # 共通名（互換性維持したい場合）
+    common_best = out_dir / "best.pt"
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -188,14 +202,17 @@ def train(args):
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            torch.save({'model': model.state_dict(), 'classes': class_names}, best_ckpt)
-            print(f"Saved best checkpoint to {best_ckpt}")
+            payload = {'model': model.state_dict(), 'classes': class_names}
+            torch.save(payload, best_ckpt)
+            torch.save(payload, common_best)  # 既存パイプラインへの互換
+            print(f"Saved best checkpoint to {best_ckpt} (and {common_best})")
 
     # test with best model
-    if best_ckpt.exists():
-        ckpt = torch.load(best_ckpt, map_location=device)
+    target_best = best_ckpt if best_ckpt.exists() else common_best
+    if target_best.exists():
+        ckpt = torch.load(target_best, map_location=device)
         model.load_state_dict(ckpt['model'])
-        print(f"Loaded best checkpoint: {best_ckpt}")
+        print(f"Loaded best checkpoint: {target_best}")
 
     test_acc, test_cm = evaluate(model, test_loader, device)
     print(f"\n[Test] Acc: {test_acc:.4f}\nConfusion Matrix:\n{test_cm}")
@@ -216,5 +233,10 @@ if __name__ == '__main__':
     parser.add_argument('--tune-mode', type=str, default='l34',
                         choices=['l34', 'l2_4', 'l1_4', 'all'],
                         help='which layers to fine-tune')
+    # 追加: 転移学習の有無
+    parser.add_argument('--pretrained', dest='pretrained', action='store_true', help='use ImageNet pretrained weights (default)')
+    parser.add_argument('--no-pretrained', dest='pretrained', action='store_false', help='train from scratch (no transfer)')
+    parser.set_defaults(pretrained=True)
+
     args = parser.parse_args()
     train(args)
