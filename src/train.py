@@ -15,14 +15,18 @@ from utils import set_seed, accuracy, compute_confusion_matrix
 
 # =========================
 # データローダー
+# 変更点：
+#  - 学習：RandomResizedCrop のみに一本化（アスペクト比保持、二重リサイズ撤廃）
+#  - 評価：Resize(短辺合わせ) → CenterCrop（歪み防止）
+#  - scale=(0.85, 1.0)
 # =========================
 def get_loaders(data_root, img_size, batch_size, num_workers):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
     train_tfms = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.RandomResizedCrop(img_size, scale=(0.8, 1.0)),
+        transforms.Lambda(lambda im: im.convert("RGB")),  # 念のため3ch統一
+        transforms.RandomResizedCrop(img_size, scale=(0.85, 1.0)),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(0.2, 0.2, 0.2, 0.1),
         transforms.ToTensor(),
@@ -30,7 +34,9 @@ def get_loaders(data_root, img_size, batch_size, num_workers):
     ])
 
     eval_tfms = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
+        transforms.Lambda(lambda im: im.convert("RGB")),  # 念のため3ch統一
+        transforms.Resize(img_size),          # 短辺=img_size（アスペクト比保持）
+        transforms.CenterCrop(img_size),
         transforms.ToTensor(),
         normalize,
     ])
@@ -39,9 +45,17 @@ def get_loaders(data_root, img_size, batch_size, num_workers):
     val_ds   = datasets.ImageFolder(os.path.join(data_root, 'val'),   transform=eval_tfms)
     test_ds  = datasets.ImageFolder(os.path.join(data_root, 'test'),  transform=eval_tfms)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=num_workers, pin_memory=True)
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    # 再現性を少し上げたい場合の Generator
+    g = torch.Generator()
+    g.manual_seed(42)
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+                              num_workers=num_workers, pin_memory=True,
+                              generator=g)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, pin_memory=True)
+    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, pin_memory=True)
 
     return train_loader, val_loader, test_loader, train_ds.classes
 
@@ -74,7 +88,7 @@ def build_model(num_classes=2, tune_mode="l34", pretrained=True):
             if any(n.startswith(pref) for pref in prefixes):
                 p.requires_grad = True
 
-    # 転移学習なしで凍結は意味が薄いので、tune_mode を all に寄せる
+    # 転移学習なしの場合、tune_mode を all にする
     if (not pretrained) and (tune_mode != "all"):
         print(f"[INFO] pretrained=False なので tune_mode='{tune_mode}' -> 'all' に変更します。", flush=True)
         tune_mode = "all"
@@ -129,10 +143,12 @@ def train(args):
         args.data_root, args.img_size, args.batch_size, args.num_workers
     )
 
+    # Faceは real/fake の2クラス前提
     model = build_model(num_classes=2, tune_mode=args.tune_mode, pretrained=args.pretrained).to(device)
 
     # 確認ログ
     print(f"[INFO] pretrained={args.pretrained}  tune_mode={args.tune_mode}", flush=True)
+    print(f"[INFO] classes={class_names}", flush=True)
     for n, p in model.named_parameters():
         print(("[TRAIN] " if p.requires_grad else "[FROZEN] ") + n, flush=True)
 
@@ -162,11 +178,10 @@ def train(args):
     criterion = nn.CrossEntropyLoss()
     best_val_acc = 0.0
 
-    # === 保存ファイル名を分ける ===
+    # === 保存ファイル名を分ける
     best_name = "best_transfer.pt" if args.pretrained else "best_scratch.pt"
     best_ckpt = out_dir / best_name
-    # 共通名（互換性維持したい場合）
-    common_best = out_dir / "best.pt"
+    common_best = out_dir / "best.pt"  # 互換用
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -233,9 +248,10 @@ if __name__ == '__main__':
     parser.add_argument('--tune-mode', type=str, default='l34',
                         choices=['l34', 'l2_4', 'l1_4', 'all'],
                         help='which layers to fine-tune')
-    # 追加: 転移学習の有無
-    parser.add_argument('--pretrained', dest='pretrained', action='store_true', help='use ImageNet pretrained weights (default)')
-    parser.add_argument('--no-pretrained', dest='pretrained', action='store_false', help='train from scratch (no transfer)')
+    parser.add_argument('--pretrained', dest='pretrained', action='store_true',
+                        help='use ImageNet pretrained weights (default)')
+    parser.add_argument('--no-pretrained', dest='pretrained', action='store_false',
+                        help='train from scratch (no transfer)')
     parser.set_defaults(pretrained=True)
 
     args = parser.parse_args()
