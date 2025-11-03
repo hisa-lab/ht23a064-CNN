@@ -18,7 +18,7 @@ from utils import set_seed, accuracy, compute_confusion_matrix
 # 変更点：
 #  - 学習：RandomResizedCrop のみに一本化（アスペクト比保持、二重リサイズ撤廃）
 #  - 評価：Resize(短辺合わせ) → CenterCrop（歪み防止）
-#  - scale=(0.85, 1.0)
+#  - scale=(0.65, 1.0)（風景用）
 # =========================
 def get_loaders(data_root, img_size, batch_size, num_workers):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -26,7 +26,7 @@ def get_loaders(data_root, img_size, batch_size, num_workers):
 
     train_tfms = transforms.Compose([
         transforms.Lambda(lambda im: im.convert("RGB")),  # 念のため3ch統一
-        transforms.RandomResizedCrop(img_size, scale=(0.85, 1.0)),
+        transforms.RandomResizedCrop(img_size, scale=(0.65, 1.0)),
         transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(0.2, 0.2, 0.2, 0.1),
         transforms.ToTensor(),
