@@ -12,14 +12,9 @@ from tqdm import tqdm
 
 from utils import set_seed, accuracy, compute_confusion_matrix
 
-
-# =========================
-# データローダー
-# 変更点：
 #  - 学習：RandomResizedCrop のみに一本化（アスペクト比保持、二重リサイズ撤廃）
 #  - 評価：Resize(短辺合わせ) → CenterCrop（歪み防止）
 #  - scale=(0.85, 1.0)
-# =========================
 def get_loaders(data_root, img_size, batch_size, num_workers):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
@@ -59,11 +54,8 @@ def get_loaders(data_root, img_size, batch_size, num_workers):
 
     return train_loader, val_loader, test_loader, train_ds.classes
 
-
-# =========================
 # モデル構築
-# =========================
-def build_model(num_classes=2, tune_mode="l34", pretrained=True):
+def build_model(num_classes=2, tune_mode="all", pretrained=True):
     """
     tune_mode:
       - "l34":    layer3, layer4, fc を学習（デフォルト）
@@ -107,10 +99,7 @@ def build_model(num_classes=2, tune_mode="l34", pretrained=True):
 
     return model
 
-
-# =========================
 # 評価関数
-# =========================
 def evaluate(model, loader, device):
     model.eval()
     total_acc = 0.0
@@ -128,10 +117,7 @@ def evaluate(model, loader, device):
     cm = compute_confusion_matrix(ys, yps, labels=[0, 1])
     return total_acc / max(n, 1), cm
 
-
-# =========================
 # 学習関数
-# =========================
 def train(args):
     set_seed(42)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -232,10 +218,7 @@ def train(args):
     test_acc, test_cm = evaluate(model, test_loader, device)
     print(f"\n[Test] Acc: {test_acc:.4f}\nConfusion Matrix:\n{test_cm}")
 
-
-# =========================
 # エントリポイント
-# =========================
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-root', type=str, required=True, help='path to data split root (train/val/test)')
